@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>URL → Markdown Link</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f6f5f0;
+    --surface: #ffffff;
+    --border: #d4d0c8;
+    --border-focus: #7c9a5e;
+    --text: #2c2c2c;
+    --text-muted: #6b6b6b;
+    --accent: #7c9a5e;
+    --accent-hover: #6a8550;
+    --accent-light: #e8f0de;
+    --mono-bg: #fafaf7;
+    --error: #c45d4e;
+    --success: #5a8a42;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --radius: 8px;
+  }
+
+  body {
+    font-family: 'Source Sans 3', 'Hiragino Kaku Gothic ProN', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 3rem 1.5rem 2rem;
+  }
+
+  .container { width: 100%; max-width: 600px; }
+
+  h1 {
+    font-weight: 300;
+    font-size: 1.6rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.3rem;
+  }
+
+  .subtitle {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+    line-height: 1.5;
+  }
+
+  label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+  }
+
+  .field + .field { margin-top: 1rem; }
+
+  .field input {
+    width: 100%;
+    padding: 0.8rem 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.86rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .field input:focus {
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--accent-light);
+  }
+
+  .field input::placeholder { color: #b0ada5; }
+
+  .field-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+    line-height: 1.4;
+  }
+
+  .title-wrapper { position: relative; }
+
+  .title-wrapper .spinner {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: none;
+  }
+
+  .title-wrapper .spinner.active { display: block; }
+
+  @keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
+
+  .status {
+    margin-top: 0.75rem;
+    font-size: 0.82rem;
+    min-height: 1.4em;
+    color: var(--text-muted);
+    transition: color 0.2s;
+  }
+  .status.loading { color: var(--accent); }
+  .status.error { color: var(--error); }
+  .status.success { color: var(--success); }
+
+  .result-card {
+    margin-top: 1.5rem;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+  }
+
+  .result-card.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .result-header {
+    padding: 0.7rem 1rem;
+    background: var(--mono-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .result-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+
+  .markdown-output {
+    margin: 1rem;
+    padding: 0.75rem 1rem;
+    background: var(--mono-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    word-break: break-all;
+    color: var(--text);
+    user-select: all;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem;
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn-copy { background: var(--accent); color: #fff; }
+  .btn-copy:hover { background: var(--accent-hover); }
+  .btn-copy.copied { background: var(--success); }
+
+  .btn-copy svg {
+    width: 14px; height: 14px;
+    fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  .bookmarklet-section {
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .bookmarklet-section h2 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  .bookmarklet-section p {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 0.75rem;
+  }
+
+  .bookmarklet-link {
+    display: inline-block;
+    padding: 0.5rem 1.2rem;
+    background: var(--mono-bg);
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+    cursor: grab;
+    transition: border-color 0.2s, background 0.2s;
+  }
+
+  .bookmarklet-link:hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+
+  .footer {
+    margin-top: 2rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    opacity: 0.6;
+  }
+
+  @media (max-width: 480px) {
+    body { padding: 2rem 1rem 1.5rem; }
+    h1 { font-size: 1.35rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>URL → Markdown Link</h1>
+  <p class="subtitle">URLを貼り付けると、パラメータを除去してページタイトルを取得し、Markdownリンクを生成します。</p>
+
+  <div class="field">
+    <label for="urlInput">URL</label>
+    <input type="text" id="urlInput" placeholder="https://example.com/page?ref=xxx" autofocus>
+  </div>
+
+  <div class="field">
+    <label for="titleInput">ページタイトル</label>
+    <div class="title-wrapper">
+      <input type="text" id="titleInput" placeholder="自動取得、または手動で入力">
+      <div class="spinner" id="spinner"></div>
+    </div>
+    <div class="field-hint">タイトルは自動取得を試みます。取得できない場合は手動で入力・編集してください。Enterでコピー。</div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="result-card" id="resultCard">
+    <div class="result-header">
+      <span class="result-label">Markdown Link</span>
+      <button class="btn btn-copy" id="copyBtn" onclick="copyToClipboard()">
+        <svg id="copyIcon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        <svg id="checkIcon" viewBox="0 0 24 24" style="display:none"><polyline points="20 6 9 17 4 12"/></svg>
+        <span id="copyLabel">コピー</span>
+      </button>
+    </div>
+    <div class="markdown-output" id="markdownOutput"></div>
+  </div>
+
+  <div class="bookmarklet-section">
+    <h2>ブックマークレット</h2>
+    <p>下のリンクをブックマークバーにドラッグしてください。閲覧中のページでクリックすると、パラメータを除去したMarkdownリンクをその場でクリップボードにコピーします（このWebアプリを開く必要はありません）。</p>
+    <a class="bookmarklet-link" href="javascript:void(function(){var t=document.title,u=location.origin+location.pathname,m='['+t.replace(/[\[\]]/g,'\\$&')+']('+u+')';navigator.clipboard.writeText(m).then(function(){var d=document.createElement('div');d.textContent='Copied: '+m;d.style.cssText='position:fixed;top:16px;right:16px;padding:12px 20px;background:%23333;color:%23fff;border-radius:8px;font:14px/1.4 sans-serif;z-index:999999;max-width:400px;word-break:break-all;box-shadow:0 4px 12px rgba(0,0,0,0.3);';document.body.appendChild(d);setTimeout(function(){d.remove()},2500)}).catch(function(){window.prompt('Copy this:',m)})})();" onclick="event.preventDefault();alert('このリンクをブックマークバーにドラッグしてください。')">
+      📎 MD Link Copy
+    </a>
+  </div>
+
+  <p class="footer">ペーストまたはEnterで自動取得 ・ タイトル編集後もリアルタイム更新</p>
+</div>
+
+<script>
+  const urlInput = document.getElementById('urlInput');
+  const titleInput = document.getElementById('titleInput');
+  const spinner = document.getElementById('spinner');
+  const statusEl = document.getElementById('status');
+  const resultCard = document.getElementById('resultCard');
+  const markdownOutput = document.getElementById('markdownOutput');
+  const copyBtn = document.getElementById('copyBtn');
+  const copyIcon = document.getElementById('copyIcon');
+  const checkIcon = document.getElementById('checkIcon');
+  const copyLabel = document.getElementById('copyLabel');
+
+  let currentCleanUrl = '';
+  let currentMarkdown = '';
+
+  function cleanUrl(raw) {
+    try {
+      const url = new URL(raw.trim());
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    } catch {
+      return null;
+    }
+  }
+
+  function showStatus(msg, type = '') {
+    statusEl.textContent = msg;
+    statusEl.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  function updateMarkdown() {
+    const title = titleInput.value.trim();
+    const url = currentCleanUrl;
+    if (!url) {
+      resultCard.classList.remove('visible');
+      return;
+    }
+    if (!title) {
+      currentMarkdown = `[${url}](${url})`;
+    } else {
+      const escaped = title.replace(/([[\]])/g, '\\$1');
+      currentMarkdown = `[${escaped}](${url})`;
+    }
+    markdownOutput.textContent = currentMarkdown;
+    resultCard.classList.add('visible');
+    resetCopyBtn();
+  }
+
+  function resetCopyBtn() {
+    copyIcon.style.display = '';
+    checkIcon.style.display = 'none';
+    copyLabel.textContent = 'コピー';
+    copyBtn.classList.remove('copied');
+  }
+
+  async function copyToClipboard() {
+    if (!currentMarkdown) return;
+    try {
+      await navigator.clipboard.writeText(currentMarkdown);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = currentMarkdown;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    copyIcon.style.display = 'none';
+    checkIcon.style.display = '';
+    copyLabel.textContent = 'コピー済み';
+    copyBtn.classList.add('copied');
+    setTimeout(resetCopyBtn, 2000);
+  }
+
+  async function fetchTitle(url) {
+    const proxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    for (const proxyUrl of proxies) {
+      try {
+        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
+        if (!res.ok) continue;
+        const text = await res.text();
+        const match = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        if (match) {
+          const raw = match[1].replace(/\s+/g, ' ').trim();
+          const doc = new DOMParser().parseFromString(raw, 'text/html');
+          return doc.body.textContent.trim();
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  async function processUrl(raw) {
+    if (!raw.trim()) return;
+
+    const url = cleanUrl(raw);
+    if (!url) {
+      showStatus('有効なURLを入力してください。', 'error');
+      resultCard.classList.remove('visible');
+      return;
+    }
+
+    currentCleanUrl = url;
+    titleInput.value = '';
+
+    spinner.classList.add('active');
+    showStatus('タイトルを取得中…', 'loading');
+    resultCard.classList.remove('visible');
+
+    const title = await fetchTitle(url);
+    spinner.classList.remove('active');
+
+    if (title) {
+      titleInput.value = title;
+      showStatus('タイトルを取得しました。', 'success');
+    } else {
+      showStatus('タイトルを自動取得できませんでした。手動で入力してください。', 'error');
+      titleInput.focus();
+    }
+    updateMarkdown();
+  }
+
+  // URL input events
+  urlInput.addEventListener('paste', () => {
+    setTimeout(() => processUrl(urlInput.value), 50);
+  });
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      processUrl(urlInput.value);
+    }
+  });
+
+  // Title input events
+  titleInput.addEventListener('input', updateMarkdown);
+
+  titleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      updateMarkdown();
+      if (currentMarkdown) copyToClipboard();
+    }
+  });
+</script>
+
+</body>
+</html>
