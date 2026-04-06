@@ -368,6 +368,30 @@
     setTimeout(resetCopyBtn, 2000);
   }
 
+  function detectCharset(bytes) {
+    // First try a rough ASCII-safe decode to find charset in meta tags
+    const ascii = new TextDecoder('ascii', { fatal: false }).decode(bytes.slice(0, 4096));
+    // <meta charset="xxx">
+    let m = ascii.match(/<meta[^>]+charset=["']?([^"';\s>]+)/i);
+    if (m) return m[1].trim().toLowerCase();
+    // <meta http-equiv="Content-Type" content="text/html; charset=xxx">
+    m = ascii.match(/<meta[^>]+content=["'][^"']*charset=([^"';\s]+)/i);
+    if (m) return m[1].trim().toLowerCase();
+    return 'utf-8';
+  }
+
+  function normalizeCharset(cs) {
+    const map = {
+      'shift_jis': 'shift_jis', 'shiftjis': 'shift_jis', 'sjis': 'shift_jis',
+      'shift-jis': 'shift_jis', 'x-sjis': 'shift_jis', 'ms932': 'shift_jis',
+      'windows-31j': 'shift_jis', 'cp932': 'shift_jis',
+      'euc-jp': 'euc-jp', 'eucjp': 'euc-jp', 'x-euc-jp': 'euc-jp',
+      'iso-2022-jp': 'iso-2022-jp',
+      'utf-8': 'utf-8', 'utf8': 'utf-8',
+    };
+    return map[cs.toLowerCase()] || cs.toLowerCase();
+  }
+
   async function fetchTitle(url) {
     const proxies = [
       `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -379,7 +403,18 @@
       try {
         const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
         if (!res.ok) continue;
-        const text = await res.text();
+        const buf = await res.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+
+        // Detect charset from HTML content
+        const charset = normalizeCharset(detectCharset(bytes));
+        let text;
+        try {
+          text = new TextDecoder(charset, { fatal: false }).decode(bytes);
+        } catch {
+          text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        }
+
         const match = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
         if (match) {
           const raw = match[1].replace(/\s+/g, ' ').trim();
