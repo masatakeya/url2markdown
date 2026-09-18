@@ -409,7 +409,7 @@
 
   function replacementRatio(text) {
     if (!text) return 1;
-    const m = text.match(/�/g);
+    const m = text.match(/\uFFFD/g);
     return m ? m.length / text.length : 0;
   }
 
@@ -440,7 +440,7 @@
   const BLOCKED_TITLE = /^(just a moment|attention required|access denied|forbidden|error|not found|page not found|too many requests|rate ?limit|security check|checking your browser|please wait|are you a (human|robot)|robot check|ddos[- ]guard|service unavailable|bad gateway|gateway time-?out|\d{3}\b)/i;
 
   function tidy(text) {
-    return (text || '').replace(/[ -]/g, ' ').replace(/\s+/g, ' ').trim();
+    return (text || '').replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   function usableTitle(text) {
