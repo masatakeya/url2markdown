@@ -111,16 +111,36 @@
 
   @keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
 
-  .status {
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
     margin-top: 0.75rem;
+    min-height: 1.8em;
+  }
+
+  .status {
     font-size: 0.82rem;
-    min-height: 1.4em;
     color: var(--text-muted);
     transition: color 0.2s;
   }
   .status.loading { color: var(--accent); }
   .status.error { color: var(--error); }
   .status.success { color: var(--success); }
+
+  .btn-retry {
+    flex-shrink: 0;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.78rem;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    color: var(--text-muted);
+  }
+  .btn-retry:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-retry[hidden] { display: none; }
 
   .result-card {
     margin-top: 1.5rem;
@@ -268,7 +288,10 @@
     <div class="field-hint">タイトルは自動取得を試みます。取得できない場合は手動で入力・編集してください。Enterでコピー。</div>
   </div>
 
-  <div class="status" id="status"></div>
+  <div class="status-row">
+    <div class="status" id="status"></div>
+    <button class="btn btn-retry" id="retryBtn" type="button" hidden>再取得</button>
+  </div>
 
   <div class="result-card" id="resultCard">
     <div class="result-header">
@@ -298,6 +321,7 @@
   const titleInput = document.getElementById('titleInput');
   const spinner = document.getElementById('spinner');
   const statusEl = document.getElementById('status');
+  const retryBtn = document.getElementById('retryBtn');
   const resultCard = document.getElementById('resultCard');
   const markdownOutput = document.getElementById('markdownOutput');
   const copyBtn = document.getElementById('copyBtn');
@@ -305,19 +329,232 @@
   const checkIcon = document.getElementById('checkIcon');
   const copyLabel = document.getElementById('copyLabel');
 
+  const PROXY_TIMEOUT = 9000;
+
   let currentCleanUrl = '';
   let currentMarkdown = '';
+  let requestSeq = 0;
+
+  /* ---------- URL ---------- */
 
   function cleanUrl(raw) {
+    const input = (raw || '').trim();
+    if (!input) return null;
+
+    let url = null;
     try {
-      const url = new URL(raw.trim());
-      url.search = '';
-      url.hash = '';
-      return url.href;
+      const parsed = new URL(input);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') url = parsed;
+    } catch { /* 下のスキーム補完を試す */ }
+
+    // "example.com/page" のようにスキームを省略した貼り付けを救済する
+    if (!url && !/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+      try {
+        const parsed = new URL('https://' + input);
+        if (parsed.hostname.includes('.')) url = parsed;
+      } catch { /* 無効な入力 */ }
+    }
+
+    if (!url) return null;
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  }
+
+  /* ---------- 文字コード ---------- */
+
+  const CHARSET_ALIASES = {
+    'shift_jis': 'shift_jis', 'shiftjis': 'shift_jis', 'sjis': 'shift_jis',
+    'shift-jis': 'shift_jis', 'x-sjis': 'shift_jis', 'ms932': 'shift_jis',
+    'ms_kanji': 'shift_jis', 'windows-31j': 'shift_jis', 'cp932': 'shift_jis',
+    'euc-jp': 'euc-jp', 'eucjp': 'euc-jp', 'x-euc-jp': 'euc-jp',
+    'cseucpkdfmtjapanese': 'euc-jp',
+    'iso-2022-jp': 'iso-2022-jp', 'csiso2022jp': 'iso-2022-jp',
+    'utf-8': 'utf-8', 'utf8': 'utf-8', 'unicode-1-1-utf-8': 'utf-8',
+  };
+
+  function normalizeCharset(cs) {
+    if (!cs) return null;
+    const key = cs.trim().toLowerCase().replace(/^["']|["']$/g, '');
+    return CHARSET_ALIASES[key] || key;
+  }
+
+  function charsetFromContentType(value) {
+    if (!value) return null;
+    const m = value.match(/charset\s*=\s*([^;\s]+)/i);
+    return m ? normalizeCharset(m[1]) : null;
+  }
+
+  function detectCharset(bytes) {
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) return 'utf-8';
+    if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) return 'utf-16le';
+    if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) return 'utf-16be';
+
+    // meta は通常先頭1KB以内だが、広告タグなどで押し下げられる例があるので8KBまで見る
+    const head = new TextDecoder('windows-1252', { fatal: false }).decode(bytes.slice(0, 8192));
+    let m = head.match(/<meta[^>]+charset\s*=\s*["']?\s*([a-z0-9_:.+-]+)/i);
+    if (m) return normalizeCharset(m[1]);
+    m = head.match(/<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([a-z0-9_:.+-]+)/i);
+    if (m) return normalizeCharset(m[1]);
+    return null;
+  }
+
+  function decodeWith(bytes, charset) {
+    try {
+      return new TextDecoder(charset, { fatal: false }).decode(bytes);
     } catch {
       return null;
     }
   }
+
+  function replacementRatio(text) {
+    if (!text) return 1;
+    const m = text.match(/�/g);
+    return m ? m.length / text.length : 0;
+  }
+
+  function decodeBytes(bytes, declared) {
+    const order = [];
+    if (declared) order.push(declared);
+    for (const cs of ['utf-8', 'shift_jis', 'euc-jp', 'iso-2022-jp']) {
+      if (!order.includes(cs)) order.push(cs);
+    }
+
+    let best = '';
+    let bestRatio = Infinity;
+    for (const cs of order) {
+      const text = decodeWith(bytes, cs);
+      if (text === null) continue;
+      const ratio = replacementRatio(text);
+      // ほとんど化けていなければその場で採用（宣言どおりに読めた通常のケース）
+      if (ratio < 0.002) return text;
+      if (ratio < bestRatio) { best = text; bestRatio = ratio; }
+    }
+    return best;
+  }
+
+  /* ---------- タイトル抽出 ---------- */
+
+  // プロキシのエラーページやボット対策ページのタイトルを掴むと、
+  // 誤ったタイトルで確定して他のプロキシを試さなくなるため弾く
+  const BLOCKED_TITLE = /^(just a moment|attention required|access denied|forbidden|error|not found|page not found|too many requests|rate ?limit|security check|checking your browser|please wait|are you a (human|robot)|robot check|ddos[- ]guard|service unavailable|bad gateway|gateway time-?out|\d{3}\b)/i;
+
+  function tidy(text) {
+    return (text || '').replace(/[ -]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function usableTitle(text) {
+    const t = tidy(text);
+    if (!t) return null;
+    if (BLOCKED_TITLE.test(t)) return null;
+    return t;
+  }
+
+  function metaContent(el) {
+    return el ? el.getAttribute('content') : '';
+  }
+
+  function decodeEntities(text) {
+    // textarea の中身は RCDATA 扱いなのでタグは生成されず、実体参照だけが解決される
+    const ta = document.createElement('textarea');
+    ta.innerHTML = text;
+    return ta.value;
+  }
+
+  function extractTitleFromHtml(html) {
+    let doc = null;
+    try {
+      doc = new DOMParser().parseFromString(html, 'text/html');
+    } catch { /* 下の正規表現にフォールバックする */ }
+
+    if (doc) {
+      const titleEl = doc.querySelector('head > title') || doc.querySelector('title');
+      const candidates = [
+        titleEl ? titleEl.textContent : '',
+        metaContent(doc.querySelector('meta[property="og:title"]')),
+        metaContent(doc.querySelector('meta[name="og:title"]')),
+        metaContent(doc.querySelector('meta[name="twitter:title"]')),
+        metaContent(doc.querySelector('meta[property="twitter:title"]')),
+      ];
+      for (const candidate of candidates) {
+        const title = usableTitle(candidate);
+        if (title) return title;
+      }
+    }
+
+    const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return m ? usableTitle(decodeEntities(m[1])) : null;
+  }
+
+  function extractTitleFromText(text) {
+    // r.jina.ai は本文を Markdown で返し、先頭に "Title: ..." 行を付ける
+    const m = text.match(/^\s*Title:\s*(.+)$/m);
+    if (m) {
+      const title = usableTitle(m[1]);
+      if (title) return title;
+    }
+    return extractTitleFromHtml(text);
+  }
+
+  /* ---------- 取得 ---------- */
+
+  const PROXIES = [
+    { name: 'allorigins', build: u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u) },
+    { name: 'codetabs', build: u => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u) },
+    { name: 'corsproxy', build: u => 'https://corsproxy.io/?url=' + encodeURIComponent(u) },
+    { name: 'cors.lol', build: u => 'https://api.cors.lol/?url=' + encodeURIComponent(u) },
+    // JS で描画するページでもタイトルを返せる
+    { name: 'jina', build: u => 'https://r.jina.ai/' + u, plainText: true },
+  ];
+
+  function timeoutSignal(ms) {
+    // AbortSignal.timeout は比較的新しい API。未対応環境では例外で全滅するため代替する
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      return AbortSignal.timeout(ms);
+    }
+    if (typeof AbortController === 'undefined') return undefined;
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), ms);
+    return ctrl.signal;
+  }
+
+  async function fetchTitleVia(proxy, url) {
+    const res = await fetch(proxy.build(url), { signal: timeoutSignal(PROXY_TIMEOUT), redirect: 'follow' });
+    if (!res.ok) throw new Error(proxy.name + ': HTTP ' + res.status);
+
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!bytes.length) throw new Error(proxy.name + ': empty response');
+
+    // プロキシが付け直す Content-Type は当てにならないので、HTML 内の宣言を優先する
+    const charset = detectCharset(bytes) || charsetFromContentType(res.headers.get('content-type'));
+    const text = decodeBytes(bytes, charset);
+
+    const title = proxy.plainText ? extractTitleFromText(text) : extractTitleFromHtml(text);
+    if (!title) throw new Error(proxy.name + ': no usable title');
+    return title;
+  }
+
+  function firstSuccess(promises) {
+    return new Promise(resolve => {
+      let pending = promises.length;
+      if (!pending) { resolve(null); return; }
+      let done = false;
+      const fail = () => { if (!done && --pending === 0) resolve(null); };
+      promises.forEach(p => p.then(value => {
+        if (done) return;
+        if (value) { done = true; resolve(value); return; }
+        fail();
+      }, fail));
+    });
+  }
+
+  async function fetchTitle(url) {
+    // 直列だと落ちているプロキシの待ち時間が積み上がり、その間に諦められてしまう。
+    // 同時に投げて、最初に妥当なタイトルを返したものを採用する
+    return firstSuccess(PROXIES.map(proxy => fetchTitleVia(proxy, url).catch(() => null)));
+  }
+
+  /* ---------- 画面 ---------- */
 
   function showStatus(msg, type = '') {
     statusEl.textContent = msg;
@@ -368,91 +605,45 @@
     setTimeout(resetCopyBtn, 2000);
   }
 
-  function detectCharset(bytes) {
-    // First try a rough ASCII-safe decode to find charset in meta tags
-    const ascii = new TextDecoder('ascii', { fatal: false }).decode(bytes.slice(0, 4096));
-    // <meta charset="xxx">
-    let m = ascii.match(/<meta[^>]+charset=["']?([^"';\s>]+)/i);
-    if (m) return m[1].trim().toLowerCase();
-    // <meta http-equiv="Content-Type" content="text/html; charset=xxx">
-    m = ascii.match(/<meta[^>]+content=["'][^"']*charset=([^"';\s]+)/i);
-    if (m) return m[1].trim().toLowerCase();
-    return 'utf-8';
-  }
-
-  function normalizeCharset(cs) {
-    const map = {
-      'shift_jis': 'shift_jis', 'shiftjis': 'shift_jis', 'sjis': 'shift_jis',
-      'shift-jis': 'shift_jis', 'x-sjis': 'shift_jis', 'ms932': 'shift_jis',
-      'windows-31j': 'shift_jis', 'cp932': 'shift_jis',
-      'euc-jp': 'euc-jp', 'eucjp': 'euc-jp', 'x-euc-jp': 'euc-jp',
-      'iso-2022-jp': 'iso-2022-jp',
-      'utf-8': 'utf-8', 'utf8': 'utf-8',
-    };
-    return map[cs.toLowerCase()] || cs.toLowerCase();
-  }
-
-  async function fetchTitle(url) {
-    const proxies = [
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-      `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-    ];
-
-    for (const proxyUrl of proxies) {
-      try {
-        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
-        if (!res.ok) continue;
-        const buf = await res.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-
-        // Detect charset from HTML content
-        const charset = normalizeCharset(detectCharset(bytes));
-        let text;
-        try {
-          text = new TextDecoder(charset, { fatal: false }).decode(bytes);
-        } catch {
-          text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-        }
-
-        const match = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        if (match) {
-          const raw = match[1].replace(/\s+/g, ' ').trim();
-          const doc = new DOMParser().parseFromString(raw, 'text/html');
-          return doc.body.textContent.trim();
-        }
-      } catch {
-        continue;
-      }
-    }
-    return null;
-  }
-
   async function processUrl(raw) {
     if (!raw.trim()) return;
 
     const url = cleanUrl(raw);
     if (!url) {
       showStatus('有効なURLを入力してください。', 'error');
+      retryBtn.hidden = true;
       resultCard.classList.remove('visible');
       return;
     }
 
+    // 続けて貼り付けたとき、古い取得結果が新しいURLのタイトルを上書きしないようにする
+    const seq = ++requestSeq;
+
     currentCleanUrl = url;
     titleInput.value = '';
+    retryBtn.hidden = true;
 
     spinner.classList.add('active');
     showStatus('タイトルを取得中…', 'loading');
-    resultCard.classList.remove('visible');
+    updateMarkdown(); // 取得を待つ間もURLだけのMarkdownは使える状態にしておく
 
-    const title = await fetchTitle(url);
+    let title = null;
+    try {
+      title = await fetchTitle(url);
+    } catch {
+      title = null;
+    }
+
+    if (seq !== requestSeq) return; // 後から入力されたURLの処理が走っている
+
     spinner.classList.remove('active');
 
     if (title) {
       titleInput.value = title;
       showStatus('タイトルを取得しました。', 'success');
     } else {
-      showStatus('タイトルを自動取得できませんでした。手動で入力してください。', 'error');
+      showStatus('タイトルを自動取得できませんでした。手動で入力するか、再取得してください。', 'error');
+      retryBtn.hidden = false;
       titleInput.focus();
     }
     updateMarkdown();
@@ -469,6 +660,8 @@
       processUrl(urlInput.value);
     }
   });
+
+  retryBtn.addEventListener('click', () => processUrl(urlInput.value));
 
   // Title input events
   titleInput.addEventListener('input', updateMarkdown);
