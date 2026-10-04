@@ -329,7 +329,11 @@
   const checkIcon = document.getElementById('checkIcon');
   const copyLabel = document.getElementById('copyLabel');
 
-  const PROXY_TIMEOUT = 9000;
+  const PROXY_TIMEOUT = 12000;
+  // 初回はプロキシや相手サーバーのキャッシュが冷えていて時間切れになりやすい。
+  // 手動の再取得なら成功する例が続いたため、全滅したら自動で1回だけやり直す
+  const AUTO_RETRIES = 1;
+  const RETRY_DELAY = 1000;
 
   let currentCleanUrl = '';
   let currentMarkdown = '';
@@ -628,13 +632,19 @@
     updateMarkdown(); // 取得を待つ間もURLだけのMarkdownは使える状態にしておく
 
     let title = null;
-    try {
-      title = await fetchTitle(url);
-    } catch {
-      title = null;
+    for (let attempt = 0; attempt <= AUTO_RETRIES && !title; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        if (seq !== requestSeq) return; // 待っている間に別のURLが入力された
+        showStatus('もう一度試しています…', 'loading');
+      }
+      try {
+        title = await fetchTitle(url);
+      } catch {
+        title = null;
+      }
+      if (seq !== requestSeq) return; // 後から入力されたURLの処理が走っている
     }
-
-    if (seq !== requestSeq) return; // 後から入力されたURLの処理が走っている
 
     spinner.classList.remove('active');
 
